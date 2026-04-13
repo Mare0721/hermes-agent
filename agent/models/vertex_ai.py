@@ -115,6 +115,7 @@ def _resolve_remote_image_cache_max_entries() -> int:
 _REMOTE_IMAGE_TIMEOUT_SECONDS = _resolve_remote_image_timeout_seconds()
 _REMOTE_IMAGE_CACHE_TTL_SECONDS = _resolve_remote_image_cache_ttl_seconds()
 _REMOTE_IMAGE_CACHE_MAX_ENTRIES = _resolve_remote_image_cache_max_entries()
+_REMOTE_IMAGE_CACHE_MAX_TOTAL_BYTES = 200 * 1024 * 1024  # 200 MB
 _REMOTE_IMAGE_CACHE: Dict[str, Tuple[float, Dict[str, str], str]] = {}
 _REMOTE_IMAGE_CACHE_LOCK = threading.Lock()
 _REMOTE_IMAGE_RUNTIME_CONFIG_LOGGED = False
@@ -329,7 +330,15 @@ def _cache_set_remote_image(url: str, inline_data: Dict[str, str], payload: byte
     digest = hashlib.sha256(payload).hexdigest()
     with _REMOTE_IMAGE_CACHE_LOCK:
         _REMOTE_IMAGE_CACHE[url] = (expires_at, dict(inline_data), digest)
-        if len(_REMOTE_IMAGE_CACHE) > _REMOTE_IMAGE_CACHE_MAX_ENTRIES:
+        # Evict by entry count
+        while len(_REMOTE_IMAGE_CACHE) > _REMOTE_IMAGE_CACHE_MAX_ENTRIES:
+            oldest_key = min(_REMOTE_IMAGE_CACHE.items(), key=lambda item: item[1][0])[0]
+            _REMOTE_IMAGE_CACHE.pop(oldest_key, None)
+        # Evict by total bytes
+        while True:
+            total = sum(len(v[1].get("data", "")) for v in _REMOTE_IMAGE_CACHE.values())
+            if total <= _REMOTE_IMAGE_CACHE_MAX_TOTAL_BYTES:
+                break
             oldest_key = min(_REMOTE_IMAGE_CACHE.items(), key=lambda item: item[1][0])[0]
             _REMOTE_IMAGE_CACHE.pop(oldest_key, None)
 
