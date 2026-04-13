@@ -986,7 +986,7 @@ async def vision_analyze_tool(
         if model:
             call_kwargs["model"] = model
         # Try full-size image first; on size-related rejection, downscale and retry.
-        async with _VISION_CONCURRENCY_SEMAPHORE:
+        async with _get_vision_semaphore():
             try:
                 response = await async_call_llm(**call_kwargs)
             except Exception as _api_err:
@@ -1016,7 +1016,8 @@ async def vision_analyze_tool(
         # Retry once on empty content (reasoning-only response)
         if not analysis:
             logger.warning("Vision LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            async with _get_vision_semaphore():
+                response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
 
         analysis = _sanitize_vision_analysis_text(analysis)
