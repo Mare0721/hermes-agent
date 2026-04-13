@@ -855,7 +855,6 @@ Environment="HOME={home_dir}"
 Environment="USER={username}"
 Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
-Environment="PYTHONPATH={working_dir}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
