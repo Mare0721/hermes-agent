@@ -439,6 +439,14 @@ DEFAULT_CONFIG = {
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
+            "max_concurrency": 3,  # max concurrent vision API calls (small limit reduces 429 bursts)
+            "rate_limit_backoff_base": 0.2,  # seconds — base delay for rate-limit fallback backoff
+            "rate_limit_backoff_max": 1.0,  # seconds — cap for exponential fallback backoff delay
+            "rate_limit_backoff_jitter": 0.15,  # seconds — jitter added to each fallback backoff step
+            "error_warn_threshold": 3,  # consecutive tool failures before warning log
+            "remote_image_timeout": 20,  # seconds — Vertex remote image fetch timeout
+            "remote_image_cache_ttl": 180,  # seconds — balanced cache lifetime for downloaded remote images
+            "remote_image_cache_max_entries": 96,  # balanced cache capacity for remote image payloads
         },
         "web_extract": {
             "provider": "auto",
@@ -765,6 +773,38 @@ OPTIONAL_ENV_VARS = {
     "GEMINI_BASE_URL": {
         "description": "Google AI Studio base URL override",
         "prompt": "Gemini base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "VERTEX_API_KEY": {
+        "description": "Google Vertex AI API key",
+        "prompt": "Vertex AI API key",
+        "url": "https://aistudio.google.com/app/apikey",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "VERTEX_PROJECT_ID": {
+        "description": "Google Cloud project id used by Vertex API key routing",
+        "prompt": "Vertex project id",
+        "url": "https://console.cloud.google.com/projectselector2/home/dashboard",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "VERTEX_REGION": {
+        "description": "Vertex region (for example: global, us-central1, us-east5)",
+        "prompt": "Vertex region (default: global)",
+        "url": "https://cloud.google.com/vertex-ai/docs/general/locations",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "VERTEX_BASE_URL": {
+        "description": "Vertex base URL override (advanced; full models endpoint path)",
+        "prompt": "Vertex base URL (leave empty for computed default)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -2285,6 +2325,7 @@ _FALLBACK_COMMENT = """
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
 #   openai-codex (OAuth — hermes auth) — OpenAI Codex
 #   nous         (OAuth — hermes auth) — Nous Portal
+#   vertex       (VERTEX_API_KEY)      — Google Vertex AI
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
@@ -2328,6 +2369,7 @@ _COMMENTED_SECTIONS = """
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
 #   openai-codex (OAuth — hermes auth) — OpenAI Codex
 #   nous         (OAuth — hermes auth) — Nous Portal
+#   vertex       (VERTEX_API_KEY)      — Google Vertex AI
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax

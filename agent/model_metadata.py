@@ -24,13 +24,14 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "vertex", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
+    "vertex-ai", "google-vertex", "google-vertex-ai",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
@@ -110,6 +111,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-5": 128000,
     "gpt-4": 128000,
     # Google
+    # Gemini 3.1 Pro supports a 2M context window. Keep this explicit key
+    # above the generic "gemini" fallback and use longest-key matching.
+    "gemini-3.1-pro-preview": 2097152,
+    "gemini-3.1-pro": 2097152,
     "gemini": 1048576,
     # Gemma (open models served via AI Studio)
     "gemma-4-31b": 256000,
@@ -161,6 +166,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-omni": 256000,
     "mimo-v2-flash": 256000,
     "zai-org/GLM-5": 202752,
+}
+
+# Hard overrides for model families where upstream registries can lag or
+# provider surfaces report inconsistent values. These are checked before
+# models.dev/OpenRouter metadata.
+_HARD_CONTEXT_OVERRIDES = {
+    "gemini-3.1-pro-preview": 2097152,
+    "gemini-3.1-pro": 2097152,
 }
 
 _CONTEXT_LENGTH_KEYS = (
@@ -218,6 +231,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter",
     "generativelanguage.googleapis.com": "gemini",
+    "aiplatform.googleapis.com": "vertex",
+    "-aiplatform.googleapis.com": "vertex",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
@@ -995,7 +1010,15 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 5. Provider-aware lookups (before generic OpenRouter cache)
+    # 5. Hard overrides for known model IDs with stable documented limits.
+    model_lower = model.lower()
+    for override_model, override_len in sorted(
+        _HARD_CONTEXT_OVERRIDES.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if override_model in model_lower:
+            return override_len
+
+    # 6. Provider-aware lookups (before generic OpenRouter cache)
     # These are provider-specific and take priority over the generic OR cache,
     # since the same model can have different context limits per provider
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
@@ -1017,7 +1040,7 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 6. OpenRouter live API metadata (provider-unaware fallback)
+    # 7. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
         return metadata[model].get("context_length", 128000)

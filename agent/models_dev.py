@@ -161,6 +161,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "fireworks": "fireworks-ai",
     "huggingface": "huggingface",
     "gemini": "google",
+    "vertex": "google",
     "google": "google",
     "xai": "xai",
     "xiaomi": "xiaomi",

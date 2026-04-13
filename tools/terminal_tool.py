@@ -1138,7 +1138,7 @@ def terminal_tool(
     force: bool = False,
     workdir: Optional[str] = None,
     pty: bool = False,
-    notify_on_complete: bool = False,
+    notify_on_complete: Optional[bool] = None,
     watch_patterns: Optional[List[str]] = None,
 ) -> str:
     """
@@ -1152,7 +1152,8 @@ def terminal_tool(
         force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
-        notify_on_complete: If True and background=True, auto-notify the agent when the process exits
+        notify_on_complete: If set and background=True, controls completion notification behavior.
+            Defaults to True when background=True, and False for foreground commands.
         watch_patterns: List of strings to watch for in background output; triggers notification on match
 
     Returns:
@@ -1373,6 +1374,12 @@ def terminal_tool(
             )
 
         if background:
+            # Background commands should proactively report completion unless
+            # the caller explicitly opts out.
+            effective_notify_on_complete = (
+                True if notify_on_complete is None else bool(notify_on_complete)
+            )
+
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
@@ -1413,7 +1420,7 @@ def terminal_tool(
                     result_data["pty_note"] = pty_disabled_reason
 
                 # Mark for agent notification on completion
-                if notify_on_complete and background:
+                if effective_notify_on_complete:
                     proc_session.notify_on_complete = True
                     result_data["notify_on_complete"] = True
 
@@ -1739,8 +1746,8 @@ TERMINAL_SCHEMA = {
             },
             "notify_on_complete": {
                 "type": "boolean",
-                "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
-                "default": False
+                "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Defaults to true for background commands. Set false to opt out.",
+                "default": True
             },
             "watch_patterns": {
                 "type": "array",
@@ -1754,14 +1761,19 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    background = args.get("background", False)
+    notify_on_complete = args.get("notify_on_complete")
+    if background and "notify_on_complete" not in args:
+        notify_on_complete = True
+
     return terminal_tool(
         command=args.get("command"),
-        background=args.get("background", False),
+        background=background,
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         workdir=args.get("workdir"),
         pty=args.get("pty", False),
-        notify_on_complete=args.get("notify_on_complete", False),
+        notify_on_complete=notify_on_complete,
         watch_patterns=args.get("watch_patterns"),
     )
 

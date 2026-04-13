@@ -70,6 +70,52 @@ class TestDoctorToolAvailabilityOverrides:
         assert unavailable == [honcho_entry]
 
 
+def _run_doctor_with_raw_config(monkeypatch, tmp_path, raw_config):
+    """Run doctor with a custom raw config.yaml payload and capture stdout."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    import yaml
+
+    (home / "config.yaml").write_text(yaml.dump(raw_config), encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    for env_var in (
+        "HERMES_VISION_DOWNLOAD_TIMEOUT",
+        "HERMES_VISION_ERROR_WARN_THRESHOLD",
+        "HERMES_VERTEX_REMOTE_IMAGE_TIMEOUT_SECONDS",
+        "HERMES_VERTEX_REMOTE_IMAGE_CACHE_TTL_SECONDS",
+        "HERMES_VERTEX_REMOTE_IMAGE_CACHE_MAX_ENTRIES",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    import io, contextlib
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    return buf.getvalue()
+
+
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
         fake_config = SimpleNamespace(enabled=True, api_key="***")
@@ -153,6 +199,42 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     out = capsys.readouterr().out
     assert out == ""
     assert issues == []
+
+
+def test_doctor_vision_runtime_section_shows_defaults(monkeypatch, tmp_path):
+    out = _run_doctor_with_raw_config(monkeypatch, tmp_path, {"memory": {}})
+
+    assert "Vision Runtime" in out
+    assert "download_timeout=30s" in out
+    assert "error_warn_threshold=3" in out
+    assert "remote_image_timeout=20s" in out
+    assert "remote_image_cache_ttl=180s" in out
+    assert "remote_image_cache_max_entries=96" in out
+
+
+def test_doctor_vision_runtime_warns_on_invalid_values(monkeypatch, tmp_path):
+    out = _run_doctor_with_raw_config(
+        monkeypatch,
+        tmp_path,
+        {
+            "memory": {},
+            "auxiliary": {
+                "vision": {
+                    "download_timeout": -1,
+                    "error_warn_threshold": 0,
+                    "remote_image_timeout": "abc",
+                    "remote_image_cache_ttl": -5,
+                    "remote_image_cache_max_entries": 0,
+                }
+            },
+        },
+    )
+
+    assert "download_timeout ignored" in out
+    assert "error_warn_threshold ignored" in out
+    assert "remote_image_timeout ignored" in out
+    assert "remote_image_cache_ttl ignored" in out
+    assert "remote_image_cache_max_entries ignored" in out
 
 
 # ── Memory provider section (doctor should only check the *active* provider) ──

@@ -243,3 +243,30 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_all_mode_sends_running_updates_with_notify_on_complete(monkeypatch, tmp_path):
+    """all mode should still send running updates when agent_notify is enabled."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(output_buffer="step 1\n", exited=False, exit_code=None),
+        None,
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.send.await_count == 1
+    sent_message = adapter.send.await_args.args[1]
+    assert "is still running" in sent_message

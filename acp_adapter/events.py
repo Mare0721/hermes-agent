@@ -58,12 +58,45 @@ def make_tool_progress_cb(
 
     Emits ``ToolCallStart`` for ``tool.started`` events and tracks IDs in a FIFO
     queue per tool name so duplicate/parallel same-name calls still complete
-    against the correct ACP tool call.  Other event types (``tool.completed``,
-    ``reasoning.available``) are silently ignored.
+    against the correct ACP tool call.
+
+    Also emits:
+      - ``ToolCallProgress(status=completed)`` for ``tool.completed``
+      - ``AgentThoughtChunk`` for ``reasoning.available``
     """
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
-        # Only emit ACP ToolCallStart for tool.started; ignore other event types
+        if event_type == "reasoning.available":
+            thought = str(preview or "").strip()
+            if thought:
+                update = acp.update_agent_thought_text(thought)
+                _send_update(conn, session_id, loop, update)
+            return
+
+        if event_type == "tool.completed":
+            queue = tool_call_ids.get(name or "")
+            if isinstance(queue, str):
+                queue = deque([queue])
+                tool_call_ids[name] = queue
+            if not queue:
+                return
+            tc_id = queue.popleft()
+            duration = kwargs.get("duration")
+            is_error = bool(kwargs.get("is_error", False))
+            status_note = []
+            if isinstance(duration, (int, float)):
+                status_note.append(f"duration={duration:.2f}s")
+            if is_error:
+                status_note.append("status=error")
+            result_text = "tool completed"
+            if status_note:
+                result_text = f"{result_text} ({', '.join(status_note)})"
+            update = build_tool_complete(tc_id, name or "tool", result=result_text)
+            _send_update(conn, session_id, loop, update)
+            if not queue:
+                tool_call_ids.pop(name, None)
+            return
+
         if event_type != "tool.started":
             return
         if isinstance(args, str):

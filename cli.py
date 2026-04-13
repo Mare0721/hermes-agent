@@ -3436,13 +3436,14 @@ class HermesCLI:
         """
         import asyncio as _asyncio
         import json as _json
-        from tools.vision_tools import vision_analyze_tool
+        from tools.vision_tools import build_grounded_vision_prompt, vision_analyze_tool
 
-        analysis_prompt = (
+        analysis_request = text if isinstance(text, str) and text.strip() else (
             "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information."
+            "Include clearly visible text/code/data/UI, objects, people, "
+            "layout, colors, and any other notable visual information."
         )
+        analysis_prompt = build_grounded_vision_prompt(analysis_request)
 
         enriched_parts = []
         for img_path in images:
@@ -3459,28 +3460,25 @@ class HermesCLI:
                 if result.get("success"):
                     description = result.get("analysis", "")
                     enriched_parts.append(
-                        f"[The user attached an image. Here's what it contains:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {img_path}]"
+                        f"[The user attached an image. Here's what it contains:\n{description}]"
                     )
                     if announce:
                         _cprint(f"  {_DIM}✓ image analyzed{_RST}")
                 else:
                     enriched_parts.append(
-                        f"[The user attached an image but it couldn't be analyzed. "
-                        f"You can try examining it with vision_analyze using "
-                        f"image_url: {img_path}]"
+                        "[Image analysis failed, so image content is unavailable. "
+                        "Do NOT infer unseen visual details. Tell the user image reading failed and ask to retry.]"
                     )
                     if announce:
-                        _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}")
+                        _cprint(f"  {_DIM}⚠ vision analysis failed{_RST}")
             except Exception as e:
                 enriched_parts.append(
-                    f"[The user attached an image but analysis failed ({e}). "
-                    f"You can try examining it with vision_analyze using "
-                    f"image_url: {img_path}]"
+                    "[Image analysis encountered an internal error. "
+                    "Do NOT infer unseen visual details. "
+                    f"Error: {e}.]"
                 )
                 if announce:
-                    _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}")
+                    _cprint(f"  {_DIM}⚠ vision analysis error{_RST}")
 
         # Combine: vision descriptions first, then the user's original text
         user_text = text if isinstance(text, str) and text else ""
@@ -4472,26 +4470,33 @@ class HermesCLI:
         _cprint(f"    Provider: {provider_label}")
 
         mi = result.model_info
+        resolved_ctx = None
+        try:
+            from agent.model_metadata import get_model_context_length
+            resolved_ctx = get_model_context_length(
+                result.new_model,
+                base_url=result.base_url or self.base_url,
+                api_key=result.api_key or self.api_key,
+                provider=result.target_provider,
+            )
+        except Exception:
+            resolved_ctx = None
+
         if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
+            display_ctx = mi.context_window
+            if isinstance(resolved_ctx, int) and resolved_ctx > 0:
+                if not display_ctx or resolved_ctx > display_ctx:
+                    display_ctx = resolved_ctx
+            if display_ctx:
+                _cprint(f"    Context: {display_ctx:,} tokens")
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
             if mi.has_cost_data():
                 _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
         else:
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or self.base_url,
-                    api_key=result.api_key or self.api_key,
-                    provider=result.target_provider,
-                )
-                _cprint(f"    Context: {ctx:,} tokens")
-            except Exception:
-                pass
+            if isinstance(resolved_ctx, int) and resolved_ctx > 0:
+                _cprint(f"    Context: {resolved_ctx:,} tokens")
 
         cache_enabled = (
             ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
@@ -4695,27 +4700,33 @@ class HermesCLI:
 
         # Rich metadata from models.dev
         mi = result.model_info
+        resolved_ctx = None
+        try:
+            from agent.model_metadata import get_model_context_length
+            resolved_ctx = get_model_context_length(
+                result.new_model,
+                base_url=result.base_url or self.base_url,
+                api_key=result.api_key or self.api_key,
+                provider=result.target_provider,
+            )
+        except Exception:
+            resolved_ctx = None
+
         if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
+            display_ctx = mi.context_window
+            if isinstance(resolved_ctx, int) and resolved_ctx > 0:
+                if not display_ctx or resolved_ctx > display_ctx:
+                    display_ctx = resolved_ctx
+            if display_ctx:
+                _cprint(f"    Context: {display_ctx:,} tokens")
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
             if mi.has_cost_data():
                 _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
         else:
-            # Fallback to old context length lookup
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or self.base_url,
-                    api_key=result.api_key or self.api_key,
-                    provider=result.target_provider,
-                )
-                _cprint(f"    Context: {ctx:,} tokens")
-            except Exception:
-                pass
+            if isinstance(resolved_ctx, int) and resolved_ctx > 0:
+                _cprint(f"    Context: {resolved_ctx:,} tokens")
 
         # Cache notice
         cache_enabled = (

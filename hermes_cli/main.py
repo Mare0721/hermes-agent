@@ -45,6 +45,7 @@ Usage:
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1043,6 +1044,7 @@ def select_provider_and_model(args=None):
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
         "gemini": "Google AI Studio",
+        "vertex": "Google Vertex AI",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
         "minimax": "MiniMax",
@@ -1077,6 +1079,7 @@ def select_provider_and_model(args=None):
     extended_providers = [
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
         ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
+        ("vertex", "Google Vertex AI (API Key + project/region endpoint)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
         ("minimax", "MiniMax (global direct API)"),
@@ -1199,7 +1202,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
+    elif selected_provider in ("gemini", "vertex", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -2487,6 +2490,41 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
         print()
 
+    # Vertex requires project context in addition to an API key.
+    # Prompt for these fields here so users don't hit runtime 404s later.
+    if provider_id == "vertex":
+        current_project = get_env_value("VERTEX_PROJECT_ID") or os.getenv("VERTEX_PROJECT_ID", "")
+        current_region = (
+            get_env_value("VERTEX_REGION")
+            or os.getenv("VERTEX_REGION", "")
+            or "global"
+        )
+
+        print("  Vertex setup requires project + region.")
+        print("  If unsure, keep region as 'global'.")
+
+        try:
+            project_id = input(f"VERTEX_PROJECT_ID [{current_project}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        project_id = project_id or current_project
+        if not project_id:
+            print("  Cancelled: Vertex requires VERTEX_PROJECT_ID.")
+            return
+
+        try:
+            region = input(f"VERTEX_REGION [{current_region}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        region = region or current_region or "global"
+
+        save_env_value("VERTEX_PROJECT_ID", project_id)
+        save_env_value("VERTEX_REGION", region)
+        print(f"  Saved Vertex context: project={project_id}, region={region}")
+        print()
+
     # Optional base URL override
     current_base = ""
     if base_url_env:
@@ -2543,6 +2581,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         current_model = normalize_opencode_model_id(provider_id, current_model)
         model_list = list(dict.fromkeys(mid for mid in model_list if mid))
 
+    # Keep model picker deterministic and intuitive for rapid-release families.
+    # For Gemini/Vertex we sort by version (newest first), then tier.
+    model_list = _sort_model_ids_newest_first(model_list, provider_id)
+
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)
     else:
@@ -2575,6 +2617,57 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print(f"Default model set to: {selected} (via {pconfig.name})")
     else:
         print("No change.")
+
+
+_MODEL_VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?")
+
+
+def _sort_model_ids_newest_first(model_ids, provider_id: str):
+    """Sort model IDs from newest to oldest for user-facing pickers.
+
+    We primarily target Gemini/Vertex where rapid iteration makes raw registry
+    order hard to scan. For other providers, preserve existing order.
+    """
+    if not isinstance(model_ids, list) or len(model_ids) <= 1:
+        return model_ids
+    if provider_id not in {"gemini", "vertex"}:
+        return model_ids
+
+    def _gemini_rank(model_id: str):
+        mid = (model_id or "").strip().lower()
+        if not mid:
+            return (-1, -1, -1, -1, model_id)
+
+        # Strip common vendor prefix for stable parsing, keep original for tie-break.
+        bare = mid.split("/", 1)[-1]
+
+        # Parse first semantic-like version in ID (e.g. 3.1, 2.5, 2.0, 1.5).
+        m = _MODEL_VERSION_RE.search(bare)
+        major = int(m.group(1)) if m else -1
+        minor = int(m.group(2) or 0) if m and m.group(2) else 0
+
+        # Prefer pro > flash > flash-lite > gemma and stable > preview > experimental aliases.
+        if "gemma" in bare:
+            family_rank = 0
+        elif "pro" in bare:
+            family_rank = 3
+        elif "flash-lite" in bare:
+            family_rank = 1
+        elif "flash" in bare:
+            family_rank = 2
+        else:
+            family_rank = 1
+
+        stage_rank = 2
+        if "preview" in bare or "exp" in bare or "experimental" in bare:
+            stage_rank = 1
+        if "latest" in bare:
+            stage_rank = 3
+
+        return (major, minor, family_rank, stage_rank, bare)
+
+    deduped = list(dict.fromkeys(mid for mid in model_ids if isinstance(mid, str) and mid.strip()))
+    return sorted(deduped, key=_gemini_rank, reverse=True)
 
 
 def _run_anthropic_oauth_flow(save_env_value):
@@ -4522,7 +4615,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "vertex", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
         default=None,
         help="Inference provider (default: auto)"
     )

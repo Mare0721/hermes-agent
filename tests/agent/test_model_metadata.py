@@ -133,7 +133,10 @@ class TestDefaultContextLengths:
     def test_gemini_models_1m(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             if "gemini" in key:
-                assert value == 1048576, f"{key} should be 1048576"
+                if "gemini-3.1-pro" in key:
+                    assert value == 2097152, f"{key} should be 2097152"
+                else:
+                    assert value == 1048576, f"{key} should be 1048576"
 
     def test_grok_models_context_lengths(self):
         # xAI /v1/models does not return context_length metadata, so

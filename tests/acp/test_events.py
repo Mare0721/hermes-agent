@@ -118,6 +118,39 @@ class TestToolProgressCallback:
             step_cb(2, [{"name": "terminal", "result": "ok-2"}])
             assert "terminal" not in tool_call_ids
 
+    def test_tool_completed_emits_progress_update(self, mock_conn, event_loop_fixture):
+        """tool.completed should emit ToolCallProgress and consume FIFO call IDs."""
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-abc123"])}
+        loop = event_loop_fixture
+        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb("tool.completed", "terminal", None, None, duration=1.23, is_error=False)
+
+        assert "terminal" not in tool_call_ids
+        mock_rcts.assert_called_once()
+
+    def test_reasoning_available_emits_thought_update(self, mock_conn, event_loop_fixture):
+        """reasoning.available should forward preview text as AgentThoughtChunk."""
+        tool_call_ids = {}
+        loop = event_loop_fixture
+        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb("reasoning.available", "_thinking", "Planning next step", None)
+
+        mock_rcts.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Thinking callback

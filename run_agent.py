@@ -4038,6 +4038,23 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        if self.provider == "vertex":
+            from agent.models.vertex_ai import build_vertex_client
+
+            client = build_vertex_client(
+                api_key=client_kwargs.get("api_key", ""),
+                base_url=str(client_kwargs.get("base_url", "")),
+                default_model=self.model,
+                project_id=os.getenv("VERTEX_PROJECT_ID", ""),
+                region=os.getenv("VERTEX_REGION", "global"),
+            )
+            logger.info(
+                "Vertex AI client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
@@ -5735,10 +5752,11 @@ class AIAgent:
             "assistant": "assistant",
             "tool": "tool result",
         }.get(role, "user")
-        analysis_prompt = (
+        from tools.vision_tools import build_grounded_vision_prompt
+        analysis_prompt = build_grounded_vision_prompt(
             "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, UI, data, objects, people, layout, colors, "
-            "and any other notable visual information."
+            "Include only clearly visible text/code/UI/data, objects, people, "
+            "layout, colors, and any other notable visual information."
         )
 
         vision_source = str(image_url or "")
@@ -5768,10 +5786,6 @@ class AIAgent:
             description = "Image analysis failed."
 
         note = f"[The {role_label} attached an image. Here's what it contains:\n{description}]"
-        if vision_source and not str(image_url or "").startswith("data:"):
-            note += (
-                f"\n[If you need a closer look, use vision_analyze with image_url: {vision_source}]"
-            )
 
         self._anthropic_image_fallback_cache[cache_key] = note
         return note

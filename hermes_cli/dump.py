@@ -285,6 +285,9 @@ def run_dump(args):
     api_keys = [
         ("OPENROUTER_API_KEY", "openrouter"),
         ("OPENAI_API_KEY", "openai"),
+        ("VERTEX_API_KEY", "vertex"),
+        ("VERTEX_PROJECT_ID", "vertex_project"),
+        ("VERTEX_REGION", "vertex_region"),
         ("ANTHROPIC_API_KEY", "anthropic"),
         ("ANTHROPIC_TOKEN", "anthropic_token"),
         ("NOUS_API_KEY", "nous"),

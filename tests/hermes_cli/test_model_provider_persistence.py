@@ -258,6 +258,78 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("default") == "minimax-m2.5"
         assert model.get("api_mode") == "anthropic_messages"
 
+    def test_vertex_flow_prompts_and_saves_project_region(self, config_home, monkeypatch):
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config, get_env_value
+
+        monkeypatch.setenv("VERTEX_API_KEY", "vertex-test-key")
+        monkeypatch.delenv("VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("VERTEX_REGION", raising=False)
+
+        with patch("hermes_cli.auth._prompt_model_selection", return_value="gemini-2.5-flash"), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("builtins.input", side_effect=["proj-abc", "global", ""]):
+            _model_flow_api_key_provider(load_config(), "vertex", "old-model")
+
+        config = load_config() or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "vertex"
+        assert model.get("default") == "gemini-2.5-flash"
+
+        assert get_env_value("VERTEX_PROJECT_ID") == "proj-abc"
+        assert get_env_value("VERTEX_REGION") == "global"
+
+    def test_vertex_flow_requires_project_id(self, config_home, monkeypatch):
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config, get_env_value
+
+        monkeypatch.setenv("VERTEX_API_KEY", "vertex-test-key")
+        monkeypatch.delenv("VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("VERTEX_REGION", raising=False)
+
+        with patch("hermes_cli.auth._prompt_model_selection") as mock_pick, \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("builtins.input", side_effect=[""]):
+            _model_flow_api_key_provider(load_config(), "vertex", "old-model")
+
+        # Early return when project id is missing: model picker never runs.
+        mock_pick.assert_not_called()
+        assert get_env_value("VERTEX_PROJECT_ID") in (None, "")
+
+    def test_vertex_model_list_sorted_newest_first(self, config_home, monkeypatch):
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config
+
+        monkeypatch.setenv("VERTEX_API_KEY", "vertex-test-key")
+        monkeypatch.setenv("VERTEX_PROJECT_ID", "proj-abc")
+        monkeypatch.setenv("VERTEX_REGION", "global")
+
+        captured = {}
+
+        def _capture_prompt(model_ids, current_model=""):
+            captured["models"] = list(model_ids)
+            return "gemini-3.1-pro-preview"
+
+        unsorted_models = [
+            "gemini-2.0-flash",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-2.5-pro",
+            "gemini-3.1-pro-preview",
+            "gemini-1.5-flash",
+        ]
+
+        with patch("agent.models_dev.list_agentic_models", return_value=unsorted_models), \
+             patch("hermes_cli.auth._prompt_model_selection", side_effect=_capture_prompt), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+               patch("builtins.input", side_effect=["", "", ""]):
+            _model_flow_api_key_provider(load_config(), "vertex", "old-model")
+
+        models = captured.get("models") or []
+        assert models, "model picker should receive a non-empty list"
+        assert models.index("gemini-3.1-pro-preview") < models.index("gemini-2.5-pro")
+        assert models.index("gemini-2.5-pro") < models.index("gemini-2.0-flash")
+
 
 class TestBaseUrlValidation:
     """Reject non-URL values in the base URL prompt (e.g. shell commands)."""

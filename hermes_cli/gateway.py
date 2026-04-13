@@ -855,6 +855,7 @@ Environment="HOME={home_dir}"
 Environment="USER={username}"
 Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
+Environment="PYTHONPATH={working_dir}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
@@ -887,6 +888,7 @@ Type=simple
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
+Environment="PYTHONPATH={working_dir}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
@@ -1277,6 +1279,8 @@ def generate_launchd_plist() -> str:
     <dict>
         <key>PATH</key>
         <string>{sane_path}</string>
+        <key>PYTHONPATH</key>
+        <string>{working_dir}</string>
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>

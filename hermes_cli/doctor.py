@@ -8,8 +8,15 @@ import os
 import sys
 import subprocess
 import shutil
+from typing import Any, Dict, Tuple
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import (
+    get_project_root,
+    get_hermes_home,
+    get_env_path,
+    load_config,
+    read_raw_config,
+)
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -84,6 +91,70 @@ def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
+
+
+def _parse_positive_float(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if parsed > 0 else 0.0
+
+
+def _parse_positive_int(value: Any) -> int:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _resolve_vision_runtime_settings(
+    config: Dict[str, Any],
+    raw_config: Dict[str, Any],
+) -> Dict[str, Tuple[Any, str]]:
+    """Resolve effective vision runtime values and their source.
+
+    Source is one of: env, config, default.
+    """
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    vision_cfg = aux.get("vision", {}) if isinstance(aux, dict) else {}
+    if not isinstance(vision_cfg, dict):
+        vision_cfg = {}
+
+    raw_aux = raw_config.get("auxiliary", {}) if isinstance(raw_config, dict) else {}
+    raw_vision_cfg = raw_aux.get("vision", {}) if isinstance(raw_aux, dict) else {}
+    if not isinstance(raw_vision_cfg, dict):
+        raw_vision_cfg = {}
+
+    def _user_set(cfg_key: str) -> bool:
+        return cfg_key in raw_vision_cfg
+
+    def _resolve_float(env_var: str, cfg_key: str, default: float) -> Tuple[float, str]:
+        env_value = _parse_positive_float(os.getenv(env_var, "").strip())
+        if env_value:
+            return env_value, "env"
+        cfg_value = _parse_positive_float(vision_cfg.get(cfg_key))
+        if cfg_value and _user_set(cfg_key):
+            return cfg_value, "config"
+        return default, "default"
+
+    def _resolve_int(env_var: str, cfg_key: str, default: int) -> Tuple[int, str]:
+        env_value = _parse_positive_int(os.getenv(env_var, "").strip())
+        if env_value:
+            return env_value, "env"
+        cfg_value = _parse_positive_int(vision_cfg.get(cfg_key))
+        if cfg_value and _user_set(cfg_key):
+            return cfg_value, "config"
+        return default, "default"
+
+    return {
+        "download_timeout": _resolve_float("HERMES_VISION_DOWNLOAD_TIMEOUT", "download_timeout", 30.0),
+        "error_warn_threshold": _resolve_int("HERMES_VISION_ERROR_WARN_THRESHOLD", "error_warn_threshold", 3),
+        "remote_image_timeout": _resolve_float("HERMES_VERTEX_REMOTE_IMAGE_TIMEOUT_SECONDS", "remote_image_timeout", 20.0),
+        "remote_image_cache_ttl": _resolve_float("HERMES_VERTEX_REMOTE_IMAGE_CACHE_TTL_SECONDS", "remote_image_cache_ttl", 180.0),
+        "remote_image_cache_max_entries": _resolve_int("HERMES_VERTEX_REMOTE_IMAGE_CACHE_MAX_ENTRIES", "remote_image_cache_max_entries", 96),
+    }
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -363,6 +434,76 @@ def run_doctor(args):
                     issues.append(ci.message)
         except Exception:
             pass
+
+    # =========================================================================
+    # Check: Vision runtime settings
+    # =========================================================================
+    print()
+    print(color("◆ Vision Runtime", Colors.CYAN, Colors.BOLD))
+
+    try:
+        merged_config = load_config()
+        raw_config = read_raw_config()
+        settings = _resolve_vision_runtime_settings(merged_config, raw_config)
+
+        download_timeout, download_src = settings["download_timeout"]
+        warn_threshold, warn_src = settings["error_warn_threshold"]
+        remote_timeout, remote_timeout_src = settings["remote_image_timeout"]
+        cache_ttl, cache_ttl_src = settings["remote_image_cache_ttl"]
+        cache_entries, cache_entries_src = settings["remote_image_cache_max_entries"]
+
+        check_ok(f"download_timeout={download_timeout:g}s", f"({download_src})")
+        check_ok(f"error_warn_threshold={warn_threshold}", f"({warn_src})")
+        check_ok(f"remote_image_timeout={remote_timeout:g}s", f"({remote_timeout_src})")
+        check_ok(f"remote_image_cache_ttl={cache_ttl:g}s", f"({cache_ttl_src})")
+        check_ok(f"remote_image_cache_max_entries={cache_entries}", f"({cache_entries_src})")
+
+        raw_aux = raw_config.get("auxiliary", {}) if isinstance(raw_config, dict) else {}
+        raw_vision = raw_aux.get("vision", {}) if isinstance(raw_aux, dict) else {}
+        if not isinstance(raw_vision, dict):
+            raw_vision = {}
+
+        def _warn_invalid_float(key: str, example: str) -> None:
+            if key in raw_vision and not _parse_positive_float(raw_vision.get(key)):
+                raw_value = raw_vision.get(key)
+                check_warn(f"{key} ignored", f"(invalid value: {raw_value!r})")
+                check_info(f"Set auxiliary.vision.{key} to a positive number, e.g. {example}")
+                issues.append(f"Invalid auxiliary.vision.{key} value")
+
+        def _warn_invalid_int(key: str, example: str) -> None:
+            if key in raw_vision and not _parse_positive_int(raw_vision.get(key)):
+                raw_value = raw_vision.get(key)
+                check_warn(f"{key} ignored", f"(invalid value: {raw_value!r})")
+                check_info(f"Set auxiliary.vision.{key} to a positive integer, e.g. {example}")
+                issues.append(f"Invalid auxiliary.vision.{key} value")
+
+        _warn_invalid_float("download_timeout", "30")
+        _warn_invalid_int("error_warn_threshold", "3")
+        _warn_invalid_float("remote_image_timeout", "20")
+        _warn_invalid_float("remote_image_cache_ttl", "180")
+        _warn_invalid_int("remote_image_cache_max_entries", "96")
+
+        # Advisory guidance for extreme-but-valid values.
+        if download_timeout < 5:
+            check_warn("download_timeout is very low", "(slow image hosts may fail)")
+            check_info("Suggested range: 15-60 seconds")
+        if remote_timeout < 5:
+            check_warn("remote_image_timeout is very low", "(remote image conversion may fail)")
+            check_info("Suggested range: 10-60 seconds")
+        if warn_threshold <= 1:
+            check_warn("error_warn_threshold is very aggressive", "(can create noisy warning logs)")
+            check_info("Suggested value: 3")
+        if cache_ttl < 10:
+            check_warn("remote_image_cache_ttl is very low", "(cache hit rate may be poor)")
+            check_info("Suggested range: 60-300 seconds")
+        if cache_entries < 16:
+            check_warn("remote_image_cache_max_entries is very low", "(cache churn likely)")
+            check_info("Suggested range: 32-256")
+        elif cache_entries > 1024:
+            check_warn("remote_image_cache_max_entries is very high", "(memory usage may increase)")
+            check_info("Suggested range: 32-256")
+    except Exception as e:
+        check_warn("Vision runtime diagnostics", f"(could not evaluate: {e})")
 
     # =========================================================================
     # Check: Auth providers

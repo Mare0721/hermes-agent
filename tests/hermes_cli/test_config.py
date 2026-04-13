@@ -69,6 +69,10 @@ class TestLoadConfigDefaults:
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
+            assert config["auxiliary"]["vision"]["error_warn_threshold"] == 3
+            assert config["auxiliary"]["vision"]["remote_image_timeout"] == 20
+            assert config["auxiliary"]["vision"]["remote_image_cache_ttl"] == 180
+            assert config["auxiliary"]["vision"]["remote_image_cache_max_entries"] == 96
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

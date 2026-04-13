@@ -143,6 +143,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         base_url_env_var="GEMINI_BASE_URL",
     ),
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="api_key",
+        inference_base_url="https://aiplatform.googleapis.com/v1",
+        api_key_env_vars=("VERTEX_API_KEY",),
+        base_url_env_var="VERTEX_BASE_URL",
+    ),
     "zai": ProviderConfig(
         id="zai",
         name="Z.AI / GLM",
@@ -490,6 +498,32 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
 
     logger.debug("Z.AI: probe failed, falling back to default %s", default_url)
     return default_url
+
+
+def _resolve_vertex_base_url(default_url: str, env_override: str) -> str:
+    """Resolve Vertex base URL from env/project metadata.
+
+    Priority:
+      1) VERTEX_BASE_URL (explicit override)
+      2) Build from VERTEX_PROJECT_ID + VERTEX_REGION
+      3) Provider default
+    """
+    if env_override:
+        return env_override.rstrip("/")
+
+    project_id = os.getenv("VERTEX_PROJECT_ID", "").strip()
+    region = os.getenv("VERTEX_REGION", "").strip() or "global"
+    if not project_id:
+        return default_url.rstrip("/")
+
+    host = "https://aiplatform.googleapis.com"
+    if region.lower() != "global":
+        host = f"https://{region}-aiplatform.googleapis.com"
+
+    return (
+        f"{host}/v1/projects/{project_id}/locations/{region}"
+        "/publishers/google/models"
+    )
 
 
 # =============================================================================
@@ -928,6 +962,7 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+        "vertex-ai": "vertex", "google-vertex": "vertex", "google-vertex-ai": "vertex",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
@@ -990,6 +1025,9 @@ def resolve_provider(
         # hijack inference auto-selection unless the user explicitly chooses
         # Copilot/GitHub Models as the provider.
         if pid == "copilot":
+            continue
+        # Vertex requires project context in addition to the API key.
+        if pid == "vertex" and not os.getenv("VERTEX_PROJECT_ID", "").strip():
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -2368,18 +2406,32 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "vertex":
+        base_url = _resolve_vertex_base_url(pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
     else:
         base_url = pconfig.inference_base_url
 
+    is_configured = bool(api_key)
+    extra: Dict[str, Any] = {}
+    if provider_id == "vertex":
+        project_id = os.getenv("VERTEX_PROJECT_ID", "").strip()
+        region = os.getenv("VERTEX_REGION", "").strip() or "global"
+        is_configured = bool(api_key and project_id)
+        extra = {
+            "project_id": project_id,
+            "region": region,
+        }
+
     return {
-        "configured": bool(api_key),
+        "configured": is_configured,
         "provider": provider_id,
         "name": pconfig.name,
         "key_source": key_source,
         "base_url": base_url,
-        "logged_in": bool(api_key),  # compat with OAuth status shape
+        "logged_in": is_configured,  # compat with OAuth status shape
+        **extra,
     }
 
 
@@ -2456,17 +2508,23 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "vertex":
+        base_url = _resolve_vertex_base_url(pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:
         base_url = pconfig.inference_base_url
 
-    return {
+    resolved = {
         "provider": provider_id,
         "api_key": api_key,
         "base_url": base_url.rstrip("/"),
         "source": key_source or "default",
     }
+    if provider_id == "vertex":
+        resolved["vertex_project_id"] = os.getenv("VERTEX_PROJECT_ID", "").strip()
+        resolved["vertex_region"] = os.getenv("VERTEX_REGION", "").strip() or "global"
+    return resolved
 
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:

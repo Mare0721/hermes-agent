@@ -6868,14 +6868,15 @@ class GatewayRunner:
         Returns:
             The enriched message string with vision descriptions prepended.
         """
-        from tools.vision_tools import vision_analyze_tool
+        from tools.vision_tools import build_grounded_vision_prompt, vision_analyze_tool
         import json as _json
 
-        analysis_prompt = (
+        analysis_request = user_text.strip() if isinstance(user_text, str) and user_text.strip() else (
             "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information."
+            "Include clearly visible text/code/data/UI, objects, people, "
+            "layout, colors, and any other notable visual information."
         )
+        analysis_prompt = build_grounded_vision_prompt(analysis_request)
 
         enriched_parts = []
         for path in image_paths:
@@ -6889,22 +6890,22 @@ class GatewayRunner:
                 if result.get("success"):
                     description = result.get("analysis", "")
                     enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                        f"[The user sent an image~ Here's what I can see:\n{description}]"
                     )
                 else:
+                    reason = str(result.get("analysis") or result.get("error") or "").strip()
                     enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
+                        "[Image analysis failed, so image content is unavailable. "
+                        "Do NOT infer or guess unseen visual details. "
+                        "Tell the user you could not read the image and ask them to retry. "
+                        f"Failure detail: {reason or 'unknown error'}.]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
+                    "[Image analysis encountered an internal error. "
+                    "Do NOT guess image details. Tell the user image reading failed and ask to retry. "
+                    f"Error: {e}.]"
                 )
 
         # Combine: vision descriptions first, then the user's original text
@@ -7154,9 +7155,10 @@ class GatewayRunner:
                             logger.error("Watcher delivery error: %s", e)
                 break
 
-            elif has_new_output and notify_mode == "all" and not agent_notify:
-                # New output available -- deliver status update (only in "all" mode)
-                # Skip periodic updates for agent_notify watchers (they only care about completion)
+            elif has_new_output and notify_mode == "all":
+                # New output available -- deliver status update (only in "all" mode).
+                # Keep this enabled even for notify_on_complete watchers so users
+                # get mid-run progress updates plus final completion notices.
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
                 message_text = (
                     f"[Background process {session_id} is still running~ "

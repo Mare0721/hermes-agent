@@ -74,6 +74,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
     ),
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("VERTEX_API_KEY", "VERTEX_PROJECT_ID", "VERTEX_REGION"),
+        base_url_env_var="VERTEX_BASE_URL",
+    ),
     "anthropic": HermesOverlay(
         transport="anthropic_messages",
         extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
@@ -207,6 +212,11 @@ ALIASES: Dict[str, str] = {
     "go": "opencode-go",
     "opencode-go-sub": "opencode-go",
 
+    # vertex
+    "vertex-ai": "vertex",
+    "google-vertex": "vertex",
+    "google-vertex-ai": "vertex",
+
     # kilo (models.dev ID for KiloCode)
     "kilocode": "kilo",
     "kilo-code": "kilo",
@@ -250,6 +260,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "vertex": "Google Vertex AI",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
 }

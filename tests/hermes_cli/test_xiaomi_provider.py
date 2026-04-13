@@ -89,6 +89,7 @@ class TestXiaomiAutoDetection:
         # Clear all other provider env vars
         for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                      "DEEPSEEK_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+                     "VERTEX_API_KEY", "VERTEX_PROJECT_ID", "VERTEX_REGION", "VERTEX_BASE_URL",
                      "DASHSCOPE_API_KEY", "XAI_API_KEY", "KIMI_API_KEY",
                      "MINIMAX_API_KEY", "AI_GATEWAY_API_KEY", "KILOCODE_API_KEY",
                      "HF_TOKEN", "GLM_API_KEY", "COPILOT_GITHUB_TOKEN",

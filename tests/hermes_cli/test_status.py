@@ -42,3 +42,70 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     assert "Manager:      Termux / manual process" in output
     assert "Start with:   hermes gateway" in output
     assert "systemd (user)" not in output
+
+
+def test_show_status_includes_vision_runtime_defaults(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "◆ Vision Runtime" in output
+    assert "Download timeout:       30s (default)" in output
+    assert "Error warn threshold:   3 (default)" in output
+    assert "Remote image timeout:   20s (default)" in output
+    assert "Remote cache ttl:       180s (default)" in output
+    assert "Remote cache entries:   96 (default)" in output
+
+
+def test_show_status_vision_runtime_prefers_env(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_VISION_DOWNLOAD_TIMEOUT", "41")
+    monkeypatch.setenv("HERMES_VISION_ERROR_WARN_THRESHOLD", "9")
+    monkeypatch.setenv("HERMES_VERTEX_REMOTE_IMAGE_TIMEOUT_SECONDS", "13")
+    monkeypatch.setenv("HERMES_VERTEX_REMOTE_IMAGE_CACHE_TTL_SECONDS", "99")
+    monkeypatch.setenv("HERMES_VERTEX_REMOTE_IMAGE_CACHE_MAX_ENTRIES", "17")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Download timeout:       41s (env)" in output
+    assert "Error warn threshold:   9 (env)" in output
+    assert "Remote image timeout:   13s (env)" in output
+    assert "Remote cache ttl:       99s (env)" in output
+    assert "Remote cache entries:   17 (env)" in output
+
+
+def test_show_status_vision_runtime_deep_no_anomalies(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    show_status(SimpleNamespace(all=False, deep=True))
+
+    output = capsys.readouterr().out
+    assert "◆ Vision Runtime" in output
+    assert "Deep diagnostics: no anomalies detected" in output
+
+
+def test_show_status_vision_runtime_deep_warns_on_invalid_values(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        (
+            "auxiliary:\n"
+            "  vision:\n"
+            "    download_timeout: -1\n"
+            "    error_warn_threshold: 0\n"
+            "    remote_image_timeout: abc\n"
+            "    remote_image_cache_ttl: -5\n"
+            "    remote_image_cache_max_entries: 0\n"
+        ),
+        encoding="utf-8",
+    )
+
+    show_status(SimpleNamespace(all=False, deep=True))
+
+    output = capsys.readouterr().out
+    assert "download_timeout ignored" in output
+    assert "error_warn_threshold ignored" in output
+    assert "remote_image_timeout ignored" in output
+    assert "remote_image_cache_ttl ignored" in output
+    assert "remote_image_cache_max_entries ignored" in output

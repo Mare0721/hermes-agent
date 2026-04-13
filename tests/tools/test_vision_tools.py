@@ -10,9 +10,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import tools.vision_tools as vision_module
 from tools.vision_tools import (
     _validate_image_url,
     _handle_vision_analyze,
+    _get_vision_fallback_providers,
+    _retry_vision_on_rate_limit,
+    _log_vision_runtime_config_once,
+    _sanitize_vision_analysis_text,
+    build_grounded_vision_prompt,
+    _resolve_error_warn_threshold,
     _determine_mime_type,
     _image_to_base64_data_url,
     _resize_image_for_vision,
@@ -208,7 +215,36 @@ class TestHandleVisionAnalyze:
             call_args = mock_tool.call_args
             full_prompt = call_args[0][1]  # second positional arg
             assert "Describe the cat" in full_prompt
-            assert "Fully describe and explain" in full_prompt
+            assert "strict vision analyst" in full_prompt
+            assert "Do not invent details" in full_prompt
+            assert "When uncertain" in full_prompt
+
+
+class TestBuildGroundedVisionPrompt:
+    def test_includes_guardrails_and_user_request(self):
+        prompt = build_grounded_vision_prompt("Read the text in the screenshot")
+        assert "strict vision analyst" in prompt
+        assert "Do not invent details" in prompt
+        assert "When uncertain" in prompt
+        assert "Do not mention system/tool limitations" in prompt
+        assert "Return only the text you can directly read from the image" in prompt
+        assert "Read the text in the screenshot" in prompt
+
+    def test_empty_request_has_safe_default(self):
+        prompt = build_grounded_vision_prompt("")
+        assert "Describe the visible content of this image." in prompt
+
+    def test_ocr_request_uses_text_only_guidance(self):
+        prompt = build_grounded_vision_prompt("请把图片中的文字发送给我")
+        assert "Return only the text you can directly read from the image" in prompt
+        assert "Do not summarize, explain, or add commentary" in prompt
+        assert "Do not mention whether the text is complete or incomplete" in prompt
+
+    def test_general_recognition_request_uses_rich_description_guidance(self):
+        prompt = build_grounded_vision_prompt("识别这张图里的人物和场景")
+        assert "Provide a thorough, structured visual description first" in prompt
+        assert "Cover layout, key objects/people" in prompt
+        assert "Return only the text you can directly read from the image" not in prompt
 
     def test_uses_auxiliary_vision_model_env(self):
         """AUXILIARY_VISION_MODEL env var should override DEFAULT_VISION_MODEL."""
@@ -450,6 +486,19 @@ class TestVisionRequirements:
         result = check_vision_requirements()
         assert isinstance(result, bool)
 
+    def test_error_warn_threshold_resolves_from_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_VISION_ERROR_WARN_THRESHOLD", "5")
+        assert _resolve_error_warn_threshold() == 5
+
+    def test_error_warn_threshold_resolves_from_config(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_VISION_ERROR_WARN_THRESHOLD", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "auxiliary:\n  vision:\n    error_warn_threshold: 7\n",
+            encoding="utf-8",
+        )
+        assert _resolve_error_warn_threshold() == 7
+
     def test_check_requirements_accepts_codex_auth(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "auth.json").write_text(
@@ -475,6 +524,72 @@ class TestVisionRequirements:
         assert "enabled" in info
         assert "session_id" in info
         assert "total_calls" in info
+
+    def test_debug_session_info_includes_health_counters(self):
+        vision_module._VISION_CONSECUTIVE_ERRORS = 2
+        info = get_debug_session_info()
+        assert info["vision_consecutive_errors"] == 2
+        assert info["vision_error_warn_threshold"] == vision_module._VISION_ERROR_WARN_THRESHOLD
+        assert info["vision_download_timeout"] == vision_module._VISION_DOWNLOAD_TIMEOUT
+        assert info["vision_max_concurrency"] == vision_module._VISION_MAX_CONCURRENCY
+        assert info["vision_rate_limit_backoff_base"] == vision_module._VISION_RATE_LIMIT_BACKOFF_BASE_SECONDS
+        assert info["vision_rate_limit_backoff_max"] == vision_module._VISION_RATE_LIMIT_BACKOFF_MAX_SECONDS
+        assert info["vision_rate_limit_backoff_jitter"] == vision_module._VISION_RATE_LIMIT_BACKOFF_JITTER_SECONDS
+
+    def test_runtime_config_logged_once(self):
+        vision_module._VISION_RUNTIME_CONFIG_LOGGED = False
+
+        with patch("tools.vision_tools.logger.info") as mock_info:
+            _log_vision_runtime_config_once()
+            _log_vision_runtime_config_once()
+
+        assert mock_info.call_count == 1
+
+
+class TestSanitizeVisionAnalysisText:
+    def test_strips_meta_truncation_note_lines(self):
+        raw = (
+            "页面顶部是搜索栏和分类标签。\n"
+            "(注：系统提供给我的图像描述信息在这里被截断了，我无法获取图像的完整细节。)\n"
+            "中间区域是视频卡片网格。"
+        )
+
+        cleaned = _sanitize_vision_analysis_text(raw)
+        assert "系统提供给我的图像描述" not in cleaned
+        assert "页面顶部是搜索栏和分类标签" in cleaned
+        assert "中间区域是视频卡片网格" in cleaned
+
+    def test_strips_text_only_truncation_note_lines(self):
+        raw = (
+            "这是一张社交媒体帖子截图。\n"
+            "（注：系统提供给我的文本到‘连接’就截断了，我看不到帖子的后半部分。）\n"
+            "可见顶部有标题和作者信息。"
+        )
+
+        cleaned = _sanitize_vision_analysis_text(raw)
+        assert "系统提供给我的文本" not in cleaned
+        assert "文本到" not in cleaned
+        assert "后半部分" not in cleaned
+        assert "这是一张社交媒体帖子截图" in cleaned
+        assert "可见顶部有标题和作者信息" in cleaned
+
+    def test_strips_plain_truncation_claim_line(self):
+        raw = (
+            "推荐内容区域有多个卡片。\n"
+            "当前看到第一个区块，后面的内容无法看到，推测可能是某作者作品。\n"
+            "下方还有一排新节目封面。"
+        )
+
+        cleaned = _sanitize_vision_analysis_text(raw)
+        assert "后面的内容无法看到" not in cleaned
+        assert "推测可能" not in cleaned
+        assert "推荐内容区域有多个卡片" in cleaned
+        assert "下方还有一排新节目封面" in cleaned
+
+    def test_keeps_normal_observation_text(self):
+        raw = "左侧是导航栏，右侧是内容区，顶部有搜索框。"
+        cleaned = _sanitize_vision_analysis_text(raw)
+        assert cleaned == raw
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +780,205 @@ class TestErrorClassification:
         assert result["success"] is False
         assert "rejected the image" in result["analysis"].lower()
         assert "smaller" in result["analysis"].lower()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_error_tells_model_not_to_guess(self, tmp_path):
+        """429/rate-limit errors should explicitly discourage visual guessing."""
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        api_error = Exception("429 Too Many Requests")
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is False
+        assert "rate-limited" in result["analysis"].lower()
+        assert "do not infer or guess" in result["analysis"].lower()
+
+    @pytest.mark.asyncio
+    async def test_consecutive_error_counter_resets_after_success(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        vision_module._VISION_CONSECUTIVE_ERRORS = 0
+        failing_error = Exception("temporary failure")
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "ok"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=failing_error,
+            ),
+        ):
+            _ = await vision_analyze_tool(str(img), "describe", "test/model")
+
+        assert vision_module._VISION_CONSECUTIVE_ERRORS == 1
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            _ = await vision_analyze_tool(str(img), "describe", "test/model")
+
+        assert vision_module._VISION_CONSECUTIVE_ERRORS == 0
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_retries_with_fallback_provider(self, tmp_path):
+        """A 429 from primary vision provider should retry with alternate provider."""
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        rate_limit = Exception("429 Too Many Requests")
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "fallback provider image description"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools._get_vision_fallback_providers",
+                return_value=["openrouter"],
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=[rate_limit, mock_response],
+            ) as mock_llm,
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is True
+        assert "fallback provider image description" in result["analysis"]
+        assert mock_llm.await_count == 2
+        second_call = mock_llm.await_args_list[1].kwargs
+        assert second_call["provider"] == "openrouter"
+        assert "model" not in second_call
+
+    @pytest.mark.asyncio
+    async def test_success_analysis_strips_meta_truncation_caveat(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = (
+            "页面中部是视频卡片。\n"
+            "(注：系统提供给我的图像描述信息在这里被截断了，我无法获取图像的完整细节。)"
+        )
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is True
+        assert "系统提供给我的图像描述" not in result["analysis"]
+        assert "页面中部是视频卡片" in result["analysis"]
+
+    @pytest.mark.asyncio
+    async def test_success_analysis_strips_text_only_truncation_caveat(self, tmp_path):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = (
+            "这是一张社交媒体帖子截图。\n"
+            "（注：系统提供给我的文本到‘连接’就截断了，我看不到帖子的后半部分。）"
+        )
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "请把图片中的文字发送给我", "test/model"))
+
+        assert result["success"] is True
+        assert "系统提供给我的文本" not in result["analysis"]
+        assert "文本到" not in result["analysis"]
+        assert "后半部分" not in result["analysis"]
+        assert "这是一张社交媒体帖子截图" in result["analysis"]
+
+
+class TestVisionFallbackProviders:
+    def test_filters_primary_aliases(self):
+        with patch(
+            "agent.auxiliary_client.get_available_vision_backends",
+            return_value=["vertex", "openrouter", "nous", "auto"],
+        ):
+            providers = _get_vision_fallback_providers()
+
+        assert providers == ["openrouter", "nous"]
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_retry_applies_backoff_sleep(self):
+        call_kwargs = {
+            "task": "vision",
+            "messages": [{"role": "user", "content": []}],
+        }
+        mock_response = MagicMock()
+
+        with (
+            patch("tools.vision_tools._get_vision_fallback_providers", return_value=["openrouter"]),
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
+            patch("tools.vision_tools.random.uniform", return_value=0.0),
+            patch("tools.vision_tools._VISION_RATE_LIMIT_BACKOFF_BASE_SECONDS", 0.2),
+            patch("tools.vision_tools._VISION_RATE_LIMIT_BACKOFF_MAX_SECONDS", 1.0),
+            patch("tools.vision_tools._VISION_RATE_LIMIT_BACKOFF_JITTER_SECONDS", 0.0),
+            patch("tools.vision_tools.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            response, used_kwargs = await _retry_vision_on_rate_limit(call_kwargs, Exception("429"))
+
+        assert response is mock_response
+        assert used_kwargs.get("provider") == "openrouter"
+        mock_sleep.assert_awaited_once_with(0.2)
 
 
 class TestVisionRegistration:

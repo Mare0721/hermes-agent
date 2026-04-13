@@ -361,6 +361,14 @@ compression:
 #     timeout: 30            # LLM API call timeout (seconds)
 #     download_timeout: 30   # Image HTTP download timeout (seconds)
 #                            # Increase for slow connections or self-hosted image servers
+#     max_concurrency: 3                  # Limit parallel vision calls to reduce burst 429s
+#     rate_limit_backoff_base: 0.2        # Base backoff (seconds) for fallback retries on 429
+#     rate_limit_backoff_max: 1.0         # Max backoff cap (seconds)
+#     rate_limit_backoff_jitter: 0.15     # Random jitter (seconds) added to backoff
+#     error_warn_threshold: 3            # Consecutive vision failures before warning logs
+#     remote_image_timeout: 20           # Vertex remote image fetch timeout (seconds)
+#     remote_image_cache_ttl: 180        # Vertex remote image cache lifetime (seconds)
+#     remote_image_cache_max_entries: 96 # Vertex remote image cache capacity
 #
 #   # Web page scraping / summarization + browser page text extraction
 #   web_extract:

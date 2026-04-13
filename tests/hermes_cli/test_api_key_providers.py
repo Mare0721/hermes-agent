@@ -38,6 +38,7 @@ class TestProviderRegistry:
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
+        ("vertex", "Google Vertex AI", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
@@ -69,6 +70,11 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["copilot"]
         assert pconfig.api_key_env_vars == ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
         assert pconfig.base_url_env_var == ""
+
+    def test_vertex_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["vertex"]
+        assert pconfig.api_key_env_vars == ("VERTEX_API_KEY",)
+        assert pconfig.base_url_env_var == "VERTEX_BASE_URL"
 
     def test_kimi_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kimi-coding"]
@@ -103,6 +109,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["vertex"].inference_base_url == "https://aiplatform.googleapis.com/v1"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
@@ -126,6 +133,7 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "VERTEX_API_KEY", "VERTEX_PROJECT_ID", "VERTEX_REGION", "VERTEX_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
@@ -216,6 +224,12 @@ class TestResolveProvider:
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
 
+    def test_explicit_vertex(self):
+        assert resolve_provider("vertex") == "vertex"
+
+    def test_alias_vertex_ai(self):
+        assert resolve_provider("vertex-ai") == "vertex"
+
     def test_alias_hf(self):
         assert resolve_provider("hf") == "huggingface"
 
@@ -264,6 +278,12 @@ class TestResolveProvider:
     def test_auto_detects_hf_token(self, monkeypatch):
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")
         assert resolve_provider("auto") == "huggingface"
+
+    def test_auto_detects_vertex_when_project_present(self, monkeypatch):
+        monkeypatch.setenv("VERTEX_API_KEY", "vertex-key")
+        monkeypatch.setenv("VERTEX_PROJECT_ID", "my-project")
+        monkeypatch.setenv("VERTEX_REGION", "us-central1")
+        assert resolve_provider("auto") == "vertex"
 
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
@@ -371,6 +391,20 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "gh-env-secret"
         assert creds["base_url"] == "https://api.githubcopilot.com"
         assert creds["source"] == "GITHUB_TOKEN"
+
+    def test_resolve_vertex_with_project_context(self, monkeypatch):
+        monkeypatch.setenv("VERTEX_API_KEY", "vertex-secret")
+        monkeypatch.setenv("VERTEX_PROJECT_ID", "proj-123")
+        monkeypatch.setenv("VERTEX_REGION", "us-east5")
+
+        creds = resolve_api_key_provider_credentials("vertex")
+
+        assert creds["provider"] == "vertex"
+        assert creds["api_key"] == "vertex-secret"
+        assert creds["source"] == "VERTEX_API_KEY"
+        assert creds["vertex_project_id"] == "proj-123"
+        assert creds["vertex_region"] == "us-east5"
+        assert "/projects/proj-123/locations/us-east5/publishers/google/models" in creds["base_url"]
 
     def test_resolve_copilot_with_gh_cli_fallback(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
@@ -515,6 +549,21 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "kimi-coding"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "kimi-key"
+
+    def test_runtime_vertex(self, monkeypatch):
+        monkeypatch.setenv("VERTEX_API_KEY", "vertex-key")
+        monkeypatch.setenv("VERTEX_PROJECT_ID", "proj-xyz")
+        monkeypatch.setenv("VERTEX_REGION", "global")
+        import hermes_cli.runtime_provider as runtime_provider
+
+        monkeypatch.setattr(runtime_provider, "load_pool", lambda provider: None)
+
+        result = runtime_provider.resolve_runtime_provider(requested="vertex")
+
+        assert result["provider"] == "vertex"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "vertex-key"
+        assert "/projects/proj-xyz/locations/global/publishers/google/models" in result["base_url"]
 
     def test_runtime_minimax(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")

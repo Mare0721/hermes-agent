@@ -267,7 +267,7 @@ class TestTerminalSchema:
         props = TERMINAL_SCHEMA["parameters"]["properties"]
         assert "notify_on_complete" in props
         assert props["notify_on_complete"]["type"] == "boolean"
-        assert props["notify_on_complete"]["default"] is False
+        assert props["notify_on_complete"]["default"] is True
 
     def test_handler_passes_notify(self):
         """_handle_terminal passes notify_on_complete to terminal_tool."""
@@ -279,6 +279,28 @@ class TestTerminalSchema:
             )
             _, kwargs = mock_tt.call_args
             assert kwargs["notify_on_complete"] is True
+
+    def test_handler_defaults_notify_for_background(self):
+        """Background commands default notify_on_complete to True when omitted."""
+        from tools.terminal_tool import _handle_terminal
+        with patch("tools.terminal_tool.terminal_tool", return_value='{"ok":true}') as mock_tt:
+            _handle_terminal(
+                {"command": "echo hi", "background": True},
+                task_id="t1",
+            )
+            _, kwargs = mock_tt.call_args
+            assert kwargs["notify_on_complete"] is True
+
+    def test_handler_respects_explicit_notify_false(self):
+        """Explicit false should override the background default."""
+        from tools.terminal_tool import _handle_terminal
+        with patch("tools.terminal_tool.terminal_tool", return_value='{"ok":true}') as mock_tt:
+            _handle_terminal(
+                {"command": "echo hi", "background": True, "notify_on_complete": False},
+                task_id="t1",
+            )
+            _, kwargs = mock_tt.call_args
+            assert kwargs["notify_on_complete"] is False
 
 
 # =========================================================================

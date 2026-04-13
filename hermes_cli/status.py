@@ -8,12 +8,13 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from typing import Any, Dict, Tuple
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config, read_raw_config
 from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
@@ -79,6 +80,129 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _parse_positive_float(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if parsed > 0 else 0.0
+
+
+def _parse_positive_int(value: Any) -> int:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _resolve_vision_runtime_settings(
+    config: Dict[str, Any],
+    raw_config: Dict[str, Any],
+) -> Dict[str, Tuple[Any, str]]:
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    vision_cfg = aux.get("vision", {}) if isinstance(aux, dict) else {}
+    if not isinstance(vision_cfg, dict):
+        vision_cfg = {}
+
+    raw_aux = raw_config.get("auxiliary", {}) if isinstance(raw_config, dict) else {}
+    raw_vision_cfg = raw_aux.get("vision", {}) if isinstance(raw_aux, dict) else {}
+    if not isinstance(raw_vision_cfg, dict):
+        raw_vision_cfg = {}
+
+    def _user_set(cfg_key: str) -> bool:
+        return cfg_key in raw_vision_cfg
+
+    def _resolve_float(env_var: str, cfg_key: str, default: float) -> Tuple[float, str]:
+        env_value = _parse_positive_float(os.getenv(env_var, "").strip())
+        if env_value:
+            return env_value, "env"
+        cfg_value = _parse_positive_float(vision_cfg.get(cfg_key))
+        if cfg_value and _user_set(cfg_key):
+            return cfg_value, "config"
+        return default, "default"
+
+    def _resolve_int(env_var: str, cfg_key: str, default: int) -> Tuple[int, str]:
+        env_value = _parse_positive_int(os.getenv(env_var, "").strip())
+        if env_value:
+            return env_value, "env"
+        cfg_value = _parse_positive_int(vision_cfg.get(cfg_key))
+        if cfg_value and _user_set(cfg_key):
+            return cfg_value, "config"
+        return default, "default"
+
+    return {
+        "download_timeout": _resolve_float("HERMES_VISION_DOWNLOAD_TIMEOUT", "download_timeout", 30.0),
+        "error_warn_threshold": _resolve_int("HERMES_VISION_ERROR_WARN_THRESHOLD", "error_warn_threshold", 3),
+        "remote_image_timeout": _resolve_float("HERMES_VERTEX_REMOTE_IMAGE_TIMEOUT_SECONDS", "remote_image_timeout", 20.0),
+        "remote_image_cache_ttl": _resolve_float("HERMES_VERTEX_REMOTE_IMAGE_CACHE_TTL_SECONDS", "remote_image_cache_ttl", 180.0),
+        "remote_image_cache_max_entries": _resolve_int("HERMES_VERTEX_REMOTE_IMAGE_CACHE_MAX_ENTRIES", "remote_image_cache_max_entries", 96),
+    }
+
+
+def _raw_vision_config(raw_config: Dict[str, Any]) -> Dict[str, Any]:
+    raw_aux = raw_config.get("auxiliary", {}) if isinstance(raw_config, dict) else {}
+    raw_vision_cfg = raw_aux.get("vision", {}) if isinstance(raw_aux, dict) else {}
+    if isinstance(raw_vision_cfg, dict):
+        return raw_vision_cfg
+    return {}
+
+
+def _collect_vision_runtime_diagnostics(
+    raw_config: Dict[str, Any],
+    settings: Dict[str, Tuple[Any, str]],
+) -> list[tuple[str, str, str]]:
+    diagnostics: list[tuple[str, str, str]] = []
+    raw_vision_cfg = _raw_vision_config(raw_config)
+
+    def _warn_invalid_float(key: str) -> None:
+        if key in raw_vision_cfg and not _parse_positive_float(raw_vision_cfg.get(key)):
+            diagnostics.append(
+                (
+                    "warn",
+                    f"{key} ignored",
+                    f"invalid value {raw_vision_cfg.get(key)!r}; fallback active",
+                )
+            )
+
+    def _warn_invalid_int(key: str) -> None:
+        if key in raw_vision_cfg and not _parse_positive_int(raw_vision_cfg.get(key)):
+            diagnostics.append(
+                (
+                    "warn",
+                    f"{key} ignored",
+                    f"invalid value {raw_vision_cfg.get(key)!r}; fallback active",
+                )
+            )
+
+    _warn_invalid_float("download_timeout")
+    _warn_invalid_int("error_warn_threshold")
+    _warn_invalid_float("remote_image_timeout")
+    _warn_invalid_float("remote_image_cache_ttl")
+    _warn_invalid_int("remote_image_cache_max_entries")
+
+    download_timeout = settings["download_timeout"][0]
+    warn_threshold = settings["error_warn_threshold"][0]
+    remote_timeout = settings["remote_image_timeout"][0]
+    cache_ttl = settings["remote_image_cache_ttl"][0]
+    cache_entries = settings["remote_image_cache_max_entries"][0]
+
+    if download_timeout < 5:
+        diagnostics.append(("warn", "download_timeout very low", "suggested range: 15-60s"))
+    if remote_timeout < 5:
+        diagnostics.append(("warn", "remote_image_timeout very low", "suggested range: 10-60s"))
+    if warn_threshold <= 1:
+        diagnostics.append(("warn", "error_warn_threshold very aggressive", "suggested value: 3"))
+    if cache_ttl < 10:
+        diagnostics.append(("warn", "remote_image_cache_ttl very low", "suggested range: 60-300s"))
+    if cache_entries < 16:
+        diagnostics.append(("warn", "remote_image_cache_max_entries very low", "suggested range: 32-256"))
+    elif cache_entries > 1024:
+        diagnostics.append(("warn", "remote_image_cache_max_entries very high", "suggested range: 32-256"))
+
+    return diagnostics
+
+
 from hermes_constants import is_termux as _is_termux
 
 
@@ -107,6 +231,10 @@ def show_status(args):
         config = load_config()
     except Exception:
         config = {}
+    try:
+        raw_config = read_raw_config()
+    except Exception:
+        raw_config = {}
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
@@ -120,6 +248,7 @@ def show_status(args):
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
+        "Vertex": "VERTEX_API_KEY",
         "Z.AI/GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
@@ -238,6 +367,7 @@ def show_status(args):
     print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
 
     apikey_providers = {
+        "Vertex AI":       ("VERTEX_API_KEY",),
         "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         "Kimi / Moonshot":  ("KIMI_API_KEY",),
         "MiniMax":          ("MINIMAX_API_KEY",),
@@ -252,6 +382,35 @@ def show_status(args):
         configured = bool(key_val)
         label = "configured" if configured else "not configured (run: hermes model)"
         print(f"  {pname:<16} {check_mark(configured)} {label}")
+
+    # =========================================================================
+    # Vision Runtime
+    # =========================================================================
+    print()
+    print(color("◆ Vision Runtime", Colors.CYAN, Colors.BOLD))
+
+    vision_runtime = _resolve_vision_runtime_settings(config, raw_config)
+    download_timeout, download_src = vision_runtime["download_timeout"]
+    warn_threshold, warn_src = vision_runtime["error_warn_threshold"]
+    remote_timeout, remote_timeout_src = vision_runtime["remote_image_timeout"]
+    cache_ttl, cache_ttl_src = vision_runtime["remote_image_cache_ttl"]
+    cache_entries, cache_entries_src = vision_runtime["remote_image_cache_max_entries"]
+
+    print(f"  Download timeout:       {download_timeout:g}s ({download_src})")
+    print(f"  Error warn threshold:   {warn_threshold} ({warn_src})")
+    print(f"  Remote image timeout:   {remote_timeout:g}s ({remote_timeout_src})")
+    print(f"  Remote cache ttl:       {cache_ttl:g}s ({cache_ttl_src})")
+    print(f"  Remote cache entries:   {cache_entries} ({cache_entries_src})")
+
+    if deep:
+        diagnostics = _collect_vision_runtime_diagnostics(raw_config, vision_runtime)
+        if diagnostics:
+            print(f"  {color('⚠', Colors.YELLOW)} Deep diagnostics:")
+            for _level, title, detail in diagnostics:
+                marker = color("⚠", Colors.YELLOW)
+                print(f"    {marker} {title} ({detail})")
+        else:
+            print(f"  {color('✓', Colors.GREEN)} Deep diagnostics: no anomalies detected")
 
     # =========================================================================
     # Terminal Configuration

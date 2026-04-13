@@ -129,6 +129,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemma-4-31b-it",
         "gemma-4-26b-it",
     ],
+    "vertex": [
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
     "zai": [
         "glm-5",
         "glm-5-turbo",
@@ -485,6 +493,7 @@ _PROVIDER_LABELS = {
     "nous": "Nous Portal",
     "copilot": "GitHub Copilot",
     "gemini": "Google AI Studio",
+    "vertex": "Google Vertex AI",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
@@ -516,6 +525,9 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "vertex-ai": "vertex",
+    "google-vertex": "vertex",
+    "google-vertex-ai": "vertex",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
@@ -839,7 +851,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-        "gemini", "huggingface",
+        "gemini", "vertex", "huggingface",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",

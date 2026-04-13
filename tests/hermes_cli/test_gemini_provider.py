@@ -37,6 +37,7 @@ class TestGeminiProviderRegistry:
 
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    "VERTEX_API_KEY", "VERTEX_PROJECT_ID", "VERTEX_REGION", "VERTEX_BASE_URL",
     "GOOGLE_API_KEY", "GEMINI_API_KEY", "GEMINI_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY",
     "MINIMAX_API_KEY", "DEEPSEEK_API_KEY",
@@ -183,8 +184,16 @@ class TestGeminiContextLength:
         assert ctx == 256000
 
     def test_gemini_3_context(self):
-        ctx = get_model_context_length("gemini-3.1-pro-preview", provider="gemini")
-        assert ctx == 1048576
+        with patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = get_model_context_length("gemini-3.1-pro-preview", provider="gemini")
+        assert ctx == 2097152
+
+    def test_gemini_3_context_override_beats_lower_models_dev(self):
+        with patch("agent.models_dev.lookup_models_dev_context", return_value=1048576), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = get_model_context_length("gemini-3.1-pro-preview", provider="gemini")
+        assert ctx == 2097152
 
 
 # ── Agent Init (no SyntaxError) ──

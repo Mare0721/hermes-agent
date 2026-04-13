@@ -11,7 +11,7 @@ Resolution order for text tasks (auto mode):
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
   5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+    6. Direct API-key providers (Vertex, z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
   7. None
 
 Resolution order for vision/multimodal tasks (auto mode):
@@ -62,6 +62,9 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "vertex-ai": "vertex",
+    "google-vertex": "vertex",
+    "google-vertex-ai": "vertex",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
@@ -96,6 +99,7 @@ def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
+    "vertex": "gemini-2.5-flash",
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.7",
@@ -112,6 +116,9 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 # differs from their main chat model, map it here.  The vision auto-detect
 # "exotic provider" branch checks this before falling back to the main model.
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
+    # Keep Vertex vision on a dedicated multimodal model instead of inheriting
+    # an arbitrary main chat model (which may be tuned for text/reasoning).
+    "vertex": "gemini-2.5-flash",
     "xiaomi": "mimo-v2-omni",
 }
 
@@ -678,7 +685,7 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_api_key_provider() -> Tuple[Optional[Any], Optional[str]]:
     """Try each API-key provider in PROVIDER_REGISTRY order.
 
     Returns (client, model) for the first provider with usable runtime
@@ -711,6 +718,25 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if not api_key:
                 continue
 
+            if provider_id == "vertex":
+                base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+                model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
+                if model is None:
+                    continue
+                from agent.models.vertex_ai import build_vertex_client
+
+                try:
+                    client = build_vertex_client(
+                        api_key=api_key,
+                        base_url=base_url,
+                        default_model=model,
+                    )
+                except Exception as exc:
+                    logger.debug("Auxiliary text client: vertex unavailable via pool: %s", exc)
+                    continue
+                logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
+                return client, model
+
             base_url = _to_openai_base_url(
                 _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
             )
@@ -731,6 +757,25 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         api_key = str(creds.get("api_key", "")).strip()
         if not api_key:
             continue
+
+        if provider_id == "vertex":
+            base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+            model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
+            if model is None:
+                continue
+            from agent.models.vertex_ai import build_vertex_client
+
+            try:
+                client = build_vertex_client(
+                    api_key=api_key,
+                    base_url=base_url,
+                    default_model=model,
+                )
+            except Exception as exc:
+                logger.debug("Auxiliary text client: vertex unavailable: %s", exc)
+                continue
+            logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
+            return client, model
 
         base_url = _to_openai_base_url(
             str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
@@ -1244,6 +1289,14 @@ def _to_async_client(sync_client, model: str):
     """Convert a sync client to its async counterpart, preserving Codex routing."""
     from openai import AsyncOpenAI
 
+    try:
+        from agent.models.vertex_ai import VertexAIClient
+
+        if isinstance(sync_client, VertexAIClient):
+            return sync_client.to_async_client(), model
+    except Exception:
+        pass
+
     if isinstance(sync_client, CodexAuxiliaryClient):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
@@ -1517,6 +1570,24 @@ def resolve_provider_client(
                          "key configured (tried: %s)",
                          provider, ", ".join(tried_sources))
             return None, None
+
+        if provider == "vertex":
+            from agent.models.vertex_ai import build_vertex_client
+
+            base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+            default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
+            final_model = _normalize_resolved_model(model or default_model, provider)
+            try:
+                client = build_vertex_client(
+                    api_key=api_key,
+                    base_url=base_url,
+                    default_model=final_model,
+                )
+            except Exception as exc:
+                logger.warning("resolve_provider_client: vertex requested but unavailable (%s)", exc)
+                return None, None
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 
         base_url = _to_openai_base_url(
             str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url

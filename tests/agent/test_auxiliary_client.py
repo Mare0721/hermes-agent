@@ -32,6 +32,7 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "VERTEX_API_KEY", "VERTEX_PROJECT_ID", "VERTEX_REGION", "VERTEX_BASE_URL",
         # Per-task provider/model/direct-endpoint overrides
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
@@ -372,7 +373,7 @@ class TestExpiredCodexFallback:
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
         """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
         # Mock resolve_anthropic_token to return an OAuth-style token
-        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.sig"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
@@ -427,9 +428,10 @@ class TestExpiredCodexFallback:
 
     def test_claude_code_oauth_env_sets_flag(self, monkeypatch):
         """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token-test")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-cc-oauth-token-test")
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, model = _try_anthropic()
@@ -816,8 +818,9 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
-            client, model = get_vision_auxiliary_client()
+            provider, client, model = resolve_vision_provider_client()
 
+        assert provider == "anthropic"
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
 
@@ -851,6 +854,28 @@ class TestAuxiliaryPoolAwareness:
             provider, client, model = resolve_vision_provider_client()
         assert client is not None
         assert provider == "custom:local"
+
+    def test_vision_auto_uses_vertex_vision_override_model(self, monkeypatch):
+        """Active Vertex provider should use dedicated vision model override."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch("agent.auxiliary_client._read_main_provider", return_value="vertex"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gemini-3.1-pro-preview"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(MagicMock(), "gemini-2.5-flash"),
+            ) as mock_resolve,
+        ):
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "vertex"
+        assert client is not None
+        assert model == "gemini-2.5-flash"
+        mock_resolve.assert_called_once_with("vertex", "gemini-2.5-flash")
 
     def test_vision_config_google_provider_uses_gemini_credentials(self, monkeypatch):
         config = {
@@ -1699,3 +1724,32 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+
+class TestVertexProviderClientRouting:
+    def test_resolve_provider_client_vertex(self, monkeypatch):
+        monkeypatch.setenv("VERTEX_API_KEY", "vertex-key")
+        monkeypatch.setenv("VERTEX_PROJECT_ID", "proj-123")
+        monkeypatch.setenv("VERTEX_REGION", "global")
+
+        client, model = resolve_provider_client("vertex", model="gemini-2.5-flash")
+
+        assert client is not None
+        assert client.__class__.__name__ == "VertexAIClient"
+        assert model == "gemini-2.5-flash"
+
+    @pytest.mark.asyncio
+    async def test_resolve_provider_client_vertex_async(self, monkeypatch):
+        monkeypatch.setenv("VERTEX_API_KEY", "vertex-key")
+        monkeypatch.setenv("VERTEX_PROJECT_ID", "proj-123")
+        monkeypatch.setenv("VERTEX_REGION", "us-central1")
+
+        client, model = resolve_provider_client(
+            "vertex",
+            model="gemini-2.5-flash",
+            async_mode=True,
+        )
+
+        assert client is not None
+        assert client.__class__.__name__ == "AsyncVertexAIClient"
+        assert model == "gemini-2.5-flash"
