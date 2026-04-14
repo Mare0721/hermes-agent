@@ -11,8 +11,9 @@ import json
 import os
 import urllib.request
 import urllib.error
+from dataclasses import dataclass
 from difflib import get_close_matches
-from typing import Any, NamedTuple, Optional
+from typing import Any, Optional
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
@@ -29,7 +30,6 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.6-plus",               ""),
     ("anthropic/claude-sonnet-4.5",     ""),
     ("anthropic/claude-haiku-4.5",      ""),
-    ("openrouter/elephant-alpha",       "free"),
     ("openai/gpt-5.4",                  ""),
     ("openai/gpt-5.4-mini",             ""),
     ("xiaomi/mimo-v2-pro",               ""),
@@ -98,7 +98,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "arcee-ai/trinity-large-thinking",
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
-        "openrouter/elephant-alpha",
     ],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [
@@ -131,8 +130,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemma-4-31b-it",
         "gemma-4-26b-it",
     ],
+    "vertex": [
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
     "zai": [
-        "glm-5.1",
         "glm-5",
         "glm-5-turbo",
         "glm-4.7",
@@ -160,12 +166,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
-    "kimi-coding-cn": [
-        "kimi-k2.5",
-        "kimi-k2-thinking",
-        "kimi-k2-turbo-preview",
-        "kimi-k2-0905-preview",
-    ],
     "moonshot": [
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -184,6 +184,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
+    "arcee": [
+        "trinity-large-thinking",
+        "trinity-large-preview",
+        "trinity-mini",
+    ],
     "anthropic": [
         "claude-opus-4-6",
         "claude-sonnet-4-6",
@@ -201,11 +206,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-pro",
         "mimo-v2-omni",
         "mimo-v2-flash",
-    ],
-    "arcee": [
-        "trinity-large-thinking",
-        "trinity-large-preview",
-        "trinity-mini",
     ],
     "opencode-zen": [
         "gpt-5.4-pro",
@@ -492,52 +492,31 @@ def check_nous_free_tier() -> bool:
         return False  # default to paid on error — don't block users
 
 
-# ---------------------------------------------------------------------------
-# Canonical provider list — single source of truth for provider identity.
-# Every code path that lists, displays, or iterates providers derives from
-# this list:  hermes model, /model, /provider, list_authenticated_providers.
-#
-# Fields:
-#   slug        — internal provider ID (used in config.yaml, --provider flag)
-#   label       — short display name
-#   tui_desc    — longer description for the `hermes model` interactive picker
-# ---------------------------------------------------------------------------
-
-class ProviderEntry(NamedTuple):
-    slug: str
-    label: str
-    tui_desc: str   # detailed description for `hermes model` TUI
-
-
-CANONICAL_PROVIDERS: list[ProviderEntry] = [
-    ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
-    ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
-    ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
-    ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
-    ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
-    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
-    ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
-    ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
-    ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
-    ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
-    ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
-    ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
-    ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
-    ProviderEntry("kimi-coding",    "Kimi / Moonshot",          "Kimi / Moonshot (Moonshot AI direct API)"),
-    ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
-    ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
-    ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
-    ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
-    ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
-    ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
-    ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
-    ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
-    ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, pay-per-use)"),
-]
-
-# Derived dicts — used throughout the codebase
-_PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
-_PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+_PROVIDER_LABELS = {
+    "openrouter": "OpenRouter",
+    "openai-codex": "OpenAI Codex",
+    "copilot-acp": "GitHub Copilot ACP",
+    "nous": "Nous Portal",
+    "copilot": "GitHub Copilot",
+    "gemini": "Google AI Studio",
+    "vertex": "Google Vertex AI",
+    "zai": "Z.AI / GLM",
+    "kimi-coding": "Kimi / Moonshot",
+    "minimax": "MiniMax",
+    "minimax-cn": "MiniMax (China)",
+    "arcee": "Arcee AI",
+    "anthropic": "Anthropic",
+    "deepseek": "DeepSeek",
+    "opencode-zen": "OpenCode Zen",
+    "opencode-go": "OpenCode Go",
+    "ai-gateway": "AI Gateway",
+    "kilocode": "Kilo Code",
+    "alibaba": "Alibaba Cloud (DashScope)",
+    "qwen-oauth": "Qwen OAuth (Portal)",
+    "huggingface": "Hugging Face",
+    "xiaomi": "Xiaomi MiMo",
+    "custom": "Custom endpoint",
+}
 
 _PROVIDER_ALIASES = {
     "glm": "zai",
@@ -553,14 +532,15 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
+    "vertex-ai": "vertex",
+    "google-vertex": "vertex",
+    "google-vertex-ai": "vertex",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn",
-    "moonshot-cn": "kimi-coding-cn",
-    "arcee-ai": "arcee",
-    "arceeai": "arcee",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "arcee-ai": "arcee",
+    "arceeai": "arcee",
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
@@ -584,10 +564,34 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
-    "grok": "xai",
-    "x-ai": "xai",
-    "x.ai": "xai",
 }
+
+_PROVIDER_ORDER = [
+    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+    "gemini", "vertex", "huggingface",
+    "zai", "kimi-coding", "minimax", "minimax-cn", "arcee", "kilocode", "anthropic", "alibaba",
+    "qwen-oauth", "xiaomi",
+    "opencode-zen", "opencode-go",
+    "ai-gateway", "deepseek", "custom",
+]
+
+
+@dataclass(frozen=True)
+class CanonicalProvider:
+    slug: str
+    label: str
+    tui_desc: str
+
+
+def _build_canonical_providers() -> tuple[CanonicalProvider, ...]:
+    providers: list[CanonicalProvider] = []
+    for slug in _PROVIDER_ORDER:
+        label = _PROVIDER_LABELS.get(slug, slug)
+        providers.append(CanonicalProvider(slug=slug, label=label, tui_desc=label))
+    return tuple(providers)
+
+
+CANONICAL_PROVIDERS: tuple[CanonicalProvider, ...] = _build_canonical_providers()
 
 
 def get_default_model_for_provider(provider: str) -> str:
@@ -672,6 +676,13 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the OpenRouter model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
+
+def menu_labels(*, force_refresh: bool = False) -> list[str]:
+    """Return display labels like 'anthropic/claude-opus-4.6 (recommended)'."""
+    labels = []
+    for mid, desc in fetch_openrouter_models(force_refresh=force_refresh):
+        labels.append(f"{mid} ({desc})" if desc else mid)
+    return labels
 
 
 
@@ -872,20 +883,14 @@ def list_available_providers() -> list[dict[str, str]]:
 
     Each dict has ``id``, ``label``, and ``aliases``.
     Checks which providers have valid credentials configured.
-
-    Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
-    source of truth shared with ``hermes model``, ``/model``, etc.).
     """
-    # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
-
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
 
     result = []
-    for pid in provider_order:
+    for pid in _PROVIDER_ORDER:
         label = _PROVIDER_LABELS.get(pid, pid)
         alias_list = aliases_for.get(pid, [])
         # Check if this provider has credentials available
