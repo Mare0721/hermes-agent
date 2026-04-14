@@ -256,6 +256,8 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    TEXT_DOCUMENT_EXTENSIONS,
+    is_text_document_mime,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -3242,12 +3244,17 @@ class GatewayRunner:
         if event.media_urls:
             image_paths = []
             audio_paths = []
+            video_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
                 if mtype.startswith("audio/") or event.message_type in (MessageType.VOICE, MessageType.AUDIO):
                     audio_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
+
+            stt_warning_sent = False
 
             if image_paths:
                 message_text = await self._enrich_message_with_vision(
@@ -3286,20 +3293,61 @@ class GatewayRunner:
                                 _stt_msg,
                                 metadata=_stt_meta,
                             )
+                            stt_warning_sent = True
+                        except Exception:
+                            pass
+
+            if video_paths:
+                _video_context = "\n\n".join(
+                    f"[The user sent a video file. Local cached path: {path}]"
+                    for path in video_paths
+                )
+                message_text = f"{_video_context}\n\n{message_text}" if message_text else _video_context
+                message_text = await self._enrich_message_with_transcription(
+                    message_text,
+                    video_paths,
+                )
+                _stt_fail_markers = (
+                    "No STT provider",
+                    "STT is disabled",
+                    "can't listen",
+                    "VOICE_TOOLS_OPENAI_KEY",
+                )
+                if (not stt_warning_sent) and any(marker in message_text for marker in _stt_fail_markers):
+                    _stt_adapter = self.adapters.get(source.platform)
+                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    if _stt_adapter:
+                        try:
+                            _stt_msg = (
+                                "🎬 I received your video but can't transcribe its audio — "
+                                "no speech-to-text provider is configured.\n\n"
+                                "To enable voice/video transcription: install faster-whisper "
+                                "(`pip install faster-whisper` in the Hermes venv) "
+                                "and set `stt.enabled: true` in config.yaml, "
+                                "then /restart the gateway."
+                            )
+                            if self._has_setup_skill():
+                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            await _stt_adapter.send(
+                                source.chat_id,
+                                _stt_msg,
+                                metadata=_stt_meta,
+                            )
                         except Exception:
                             pass
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
 
-            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+            _MAX_TEXT_INJECT_BYTES = 100 * 1024
+
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype in ("", "application/octet-stream"):
                     import os as _os2
 
                     _ext = _os2.path.splitext(path)[1].lower()
-                    if _ext in _TEXT_EXTENSIONS:
+                    if _ext in TEXT_DOCUMENT_EXTENSIONS:
                         mtype = "text/plain"
                     else:
                         guessed, _ = _mimetypes.guess_type(path)
@@ -3316,11 +3364,33 @@ class GatewayRunner:
                 display_name = parts[2] if len(parts) >= 3 else basename
                 display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
 
-                if mtype.startswith("text/"):
+                if is_text_document_mime(mtype):
+                    injected_text = ""
+                    try:
+                        if _os.path.getsize(path) <= _MAX_TEXT_INJECT_BYTES:
+                            with open(path, "rb") as _fh:
+                                raw = _fh.read()
+                            injected_text = raw.decode("utf-8")
+                    except Exception:
+                        injected_text = ""
+
+                    if injected_text:
+                        context_note = (
+                            f"[The user sent a text document: '{display_name}'. "
+                            f"Its content has been included below. "
+                            f"The file is also saved at: {path}]"
+                        )
+                        injected_block = f"[Content of {display_name}]:\n{injected_text}"
+                        if message_text:
+                            message_text = f"{context_note}\n\n{injected_block}\n\n{message_text}"
+                        else:
+                            message_text = f"{context_note}\n\n{injected_block}"
+                        continue
+
                     context_note = (
                         f"[The user sent a text document: '{display_name}'. "
-                        f"Its content has been included below. "
-                        f"The file is also saved at: {path}]"
+                        f"The file is saved at: {path}. "
+                        f"Ask the user if they want a focused summary or extraction.]"
                     )
                 else:
                     context_note = (

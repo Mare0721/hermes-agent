@@ -40,6 +40,8 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    resolve_supported_document_extension,
+    is_text_document_mime,
     safe_url_for_log,
     cache_document_from_bytes,
 )
@@ -1105,15 +1107,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # Try to handle as a document attachment
                 try:
                     original_filename = f.get("name", "")
-                    ext = ""
-                    if original_filename:
-                        _, ext = os.path.splitext(original_filename)
-                        ext = ext.lower()
-
-                    # Fallback: reverse-lookup from MIME type
-                    if not ext and mimetype:
-                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                        ext = mime_to_ext.get(mimetype, "")
+                    ext = resolve_supported_document_extension(original_filename, mimetype or "")
 
                     if ext not in SUPPORTED_DOCUMENT_TYPES:
                         continue  # Skip unsupported file types silently
@@ -1138,7 +1132,7 @@ class SlackAdapter(BasePlatformAdapter):
 
                     # Inject text content for .txt/.md files (capped at 100 KB)
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    if is_text_document_mime(doc_mime) and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = original_filename or f"document{ext}"
