@@ -37,11 +37,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
-<<<<<<< HEAD
-    "arcee-ai", "arceeai",
     "xai", "x-ai", "x.ai", "grok",
-=======
->>>>>>> fb899d9b (feat: fix provider export and improve video/document handling)
     "qwen-portal",
     "arcee-ai", "arceeai",
 })
