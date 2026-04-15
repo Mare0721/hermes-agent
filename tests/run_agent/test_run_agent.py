@@ -2614,7 +2614,7 @@ class TestCredentialPoolRecovery:
         assert retry_same is False
         agent._swap_credential.assert_called_once_with(next_entry)
 
-    def test_recover_with_pool_retries_first_429_then_rotates(self, agent):
+    def test_recover_with_pool_rotates_on_first_429(self, agent):
         next_entry = SimpleNamespace(label="secondary")
 
         class _Pool:
@@ -2632,14 +2632,6 @@ class TestCredentialPoolRecovery:
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=429,
             has_retried_429=False,
-        )
-        assert recovered is False
-        assert retry_same is True
-        agent._swap_credential.assert_not_called()
-
-        recovered, retry_same = agent._recover_with_credential_pool(
-            status_code=429,
-            has_retried_429=True,
         )
         assert recovered is True
         assert retry_same is False
@@ -2749,7 +2741,7 @@ class TestCredentialPoolRecovery:
 
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=429,
-            has_retried_429=True,
+            has_retried_429=False,
             error_context={"reason": "device_code_exhausted", "reset_at": "2026-04-12T10:30:00Z"},
         )
 

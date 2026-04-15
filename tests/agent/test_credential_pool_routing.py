@@ -6,7 +6,7 @@ Covers:
 3. Gateway _resolve_turn_agent_config passes credential_pool to primary dict
 4. Eager fallback deferred when credential pool has credentials
 5. Eager fallback fires when no credential pool exists
-6. Full 429 rotation cycle: retry-same → rotate → exhaust → fallback
+6. Full 429 rotation cycle: immediate rotate → exhaust → fallback
 """
 
 import os
@@ -255,7 +255,7 @@ class TestEagerFallbackWithPool:
 # ---------------------------------------------------------------------------
 
 class TestPoolRotationCycle:
-    """Verify the retry-same → rotate → exhaust flow in _recover_with_credential_pool."""
+    """Verify the immediate-rotate → exhaust flow in _recover_with_credential_pool."""
 
     def _make_agent_with_pool(self, pool_entries=3):
         from run_agent import AIAgent
@@ -289,41 +289,25 @@ class TestPoolRotationCycle:
 
         return agent, pool, entries
 
-    def test_first_429_sets_retry_flag_no_rotation(self):
-        """First 429 should just set has_retried_429=True, no rotation."""
+    def test_first_429_rotates_to_next(self):
+        """First 429 should immediately rotate to next credential."""
         agent, pool, _ = self._make_agent_with_pool(3)
         recovered, has_retried = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=False
         )
-        assert recovered is False
-        assert has_retried is True
-        pool.mark_exhausted_and_rotate.assert_not_called()
-
-    def test_second_429_rotates_to_next(self):
-        """Second consecutive 429 should rotate to next credential."""
-        agent, pool, entries = self._make_agent_with_pool(3)
-        recovered, has_retried = agent._recover_with_credential_pool(
-            status_code=429, has_retried_429=True
-        )
         assert recovered is True
-        assert has_retried is False  # reset after rotation
+        assert has_retried is False
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None)
-        agent._swap_credential.assert_called_once_with(entries[1])
+        agent._swap_credential.assert_called_once()
 
     def test_pool_exhaustion_returns_false(self):
         """When all credentials exhausted, recovery should return False."""
         agent, pool, _ = self._make_agent_with_pool(1)
-        # First 429 sets flag
-        _, has_retried = agent._recover_with_credential_pool(
+        recovered, has_retried = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=False
         )
-        assert has_retried is True
-
-        # Second 429 tries to rotate but pool is exhausted (only 1 entry)
-        recovered, _ = agent._recover_with_credential_pool(
-            status_code=429, has_retried_429=True
-        )
         assert recovered is False
+        assert has_retried is False
 
     def test_402_immediate_rotation(self):
         """402 (billing) should immediately rotate, no retry-first."""

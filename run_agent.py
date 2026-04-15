@@ -4743,8 +4743,7 @@ class AIAgent:
         """Attempt credential recovery via pool rotation.
 
         Returns (recovered, has_retried_429).
-        On rate limits: first occurrence retries same credential (sets flag True).
-                        second consecutive failure rotates to next credential.
+        On rate limits: first occurrence immediately rotates to next credential.
         On billing exhaustion: immediately rotates.
         On auth failures: attempts token refresh before rotating.
 
@@ -4781,8 +4780,6 @@ class AIAgent:
             return False, has_retried_429
 
         if effective_reason == FailoverReason.rate_limit:
-            if not has_retried_429:
-                return False, True
             rotate_status = status_code if status_code is not None else 429
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
             if next_entry is not None:
@@ -4793,7 +4790,7 @@ class AIAgent:
                 )
                 self._swap_credential(next_entry)
                 return True, False
-            return False, True
+            return False, False
 
         if effective_reason == FailoverReason.auth:
             refreshed = pool.try_refresh_current()
