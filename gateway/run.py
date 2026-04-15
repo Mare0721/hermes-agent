@@ -343,6 +343,24 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _load_provider_credential_pool(provider: Optional[str]) -> Any:
+    """Load a provider-scoped credential pool when available."""
+    provider_name = str(provider or "").strip().lower()
+    if not provider_name:
+        return None
+
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider_name)
+    except Exception:
+        return None
+
+    if pool and pool.has_credentials():
+        return pool
+    return None
+
+
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
 
@@ -531,7 +549,7 @@ class GatewayRunner:
     _restart_detached: bool = False
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
-    _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_model_overrides: Dict[str, Dict[str, Any]] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -587,8 +605,8 @@ class GatewayRunner:
         self._agent_cache_lock = _threading.Lock()
 
         # Per-session model overrides from /model command.
-        # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode/credential_pool
+        self._session_model_overrides: Dict[str, Dict[str, Any]] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -879,7 +897,12 @@ class GatewayRunner:
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
+                "credential_pool": override.get("credential_pool"),
             }
+            if not override_runtime.get("credential_pool"):
+                override_runtime["credential_pool"] = _load_provider_credential_pool(
+                    override_runtime.get("provider")
+                )
             if override_runtime.get("api_key"):
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
@@ -4771,12 +4794,14 @@ class GatewayRunner:
                             f"via {result.provider_label or result.target_provider}. "
                             f"Adjust your self-identification accordingly.]"
                         )
+                        _pool = _load_provider_credential_pool(result.target_provider)
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
                             "provider": result.target_provider,
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "credential_pool": _pool,
                         }
 
                         # Evict cached agent so the next turn creates a fresh
@@ -4889,12 +4914,14 @@ class GatewayRunner:
         )
 
         # Store session override so next agent creation uses the new model
+        _pool = _load_provider_credential_pool(result.target_provider)
         self._session_model_overrides[session_key] = {
             "model": result.new_model,
             "provider": result.target_provider,
             "api_key": result.api_key,
             "base_url": result.base_url,
             "api_mode": result.api_mode,
+            "credential_pool": _pool,
         }
 
         # Evict cached agent so the next turn creates a fresh agent from the
@@ -7799,7 +7826,7 @@ class GatewayRunner:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode"):
+        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
