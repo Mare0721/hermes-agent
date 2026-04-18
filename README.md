@@ -1,4 +1,4 @@
-# Changes: adapt/vertex-feature-20260415-1-sync-20260415
+vertex-feature-20260415-1-sync-20260415
 
 ---
 
